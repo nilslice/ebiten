@@ -77,10 +77,6 @@ func newImageImplFromImage(source image.Image, filter Filter) (*imageImpl, error
 	// an image is delayed and we can't expect the source image is not modified
 	// until the construction.
 	rgbaImg := graphics.CopyImage(source)
-	p := make([]uint8, 4*w*h)
-	for j := 0; j < h; j++ {
-		copy(p[j*w*4:(j+1)*w*4], rgbaImg.Pix[j*rgbaImg.Stride:])
-	}
 	img, err := restorable.NewImageFromImage(rgbaImg, w, h, glFilter(filter))
 	if err != nil {
 		return nil, err
@@ -88,7 +84,6 @@ func newImageImplFromImage(source image.Image, filter Filter) (*imageImpl, error
 	i := &imageImpl{
 		restorable: img,
 	}
-	i.restorable.ReplacePixels(p)
 	runtime.SetFinalizer(i, (*imageImpl).Dispose)
 	return i, nil
 }
@@ -262,7 +257,12 @@ func (i *imageImpl) ReplacePixels(p []uint8) error {
 	if i.restorable == nil {
 		return errors.New("ebiten: image is already disposed")
 	}
-	if err := i.restorable.ReplacePixels(p); err != nil {
+	w2, h2 := graphics.NextPowerOf2Int(w), graphics.NextPowerOf2Int(h)
+	pix := make([]uint8, 4*w2*h2)
+	for j := 0; j < h; j++ {
+		copy(pix[j*w2*4:], p[j*w*4:(j+1)*w*4])
+	}
+	if err := i.restorable.ReplacePixels(pix); err != nil {
 		return err
 	}
 	return nil

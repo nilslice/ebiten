@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	. "github.com/hajimehoshi/ebiten"
+	"github.com/hajimehoshi/ebiten/internal/graphics"
 )
 
 func TestMain(m *testing.M) {
@@ -87,8 +88,11 @@ func TestImagePixels(t *testing.T) {
 		t.Fatalf("img size: got %d; want %d", got, img.Bounds().Size())
 	}
 
-	for j := 0; j < img0.Bounds().Size().Y; j++ {
-		for i := 0; i < img0.Bounds().Size().X; i++ {
+	w, h := img0.Bounds().Size().X, img0.Bounds().Size().Y
+	// Check out of range part
+	w2, h2 := graphics.NextPowerOf2Int(w), graphics.NextPowerOf2Int(h)
+	for j := -100; j < h2+100; j++ {
+		for i := -100; i < w2+100; i++ {
 			got := img0.At(i, j)
 			want := color.RGBAModel.Convert(img.At(i, j))
 			if got != want {
@@ -200,6 +204,69 @@ func TestImageSelf(t *testing.T) {
 	}
 	if err := img.DrawImage(img, nil); err == nil {
 		t.Fatalf("img.DrawImage(img, nil) doesn't return error; an error should be returned")
+	}
+}
+
+func TestImageScale(t *testing.T) {
+	for _, scale := range []int{2, 3, 4} {
+		img0, _, err := openEbitenImage("testdata/ebiten.png")
+		if err != nil {
+			t.Fatal(err)
+			return
+		}
+		w, h := img0.Size()
+		img1, err := NewImage(w*scale, h*scale, FilterNearest)
+		if err != nil {
+			t.Fatal(err)
+			return
+		}
+		op := &DrawImageOptions{}
+		op.GeoM.Scale(float64(scale), float64(scale))
+		if err := img1.DrawImage(img0, op); err != nil {
+			t.Fatal(err)
+			return
+		}
+
+		for j := 0; j < h*2; j++ {
+			for i := 0; i < w*2; i++ {
+				c0 := img0.At(i/scale, j/scale).(color.RGBA)
+				c1 := img1.At(i, j).(color.RGBA)
+				if c0 != c1 {
+					t.Errorf("img0.At(%[1]d, %[2]d) should equal to img1.At(%[3]d, %[4]d) (with scale %[5]d) but not: %[6]v vs %[7]v", i/2, j/2, i, j, scale, c0, c1)
+				}
+			}
+		}
+	}
+}
+
+func TestImage90DegreeRotate(t *testing.T) {
+	img0, _, err := openEbitenImage("testdata/ebiten.png")
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	w, h := img0.Size()
+	img1, err := NewImage(h, w, FilterNearest)
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	op := &DrawImageOptions{}
+	op.GeoM.Rotate(math.Pi / 2)
+	op.GeoM.Translate(float64(h), 0)
+	if err := img1.DrawImage(img0, op); err != nil {
+		t.Fatal(err)
+		return
+	}
+
+	for j := 0; j < h; j++ {
+		for i := 0; i < w; i++ {
+			c0 := img0.At(i, j).(color.RGBA)
+			c1 := img1.At(h-j-1, i).(color.RGBA)
+			if c0 != c1 {
+				t.Errorf("img0.At(%[1]d, %[2]d) should equal to img1.At(%[3]d, %[4]d) but not: %[5]v vs %[6]v", i, j, h-j-1, i, c0, c1)
+			}
+		}
 	}
 }
 
@@ -492,6 +559,93 @@ func TestImageSize(t *testing.T) {
 		} else {
 			if !size.error {
 				t.Errorf("NewImage(%d, %d, ...) must not cause error but did: %s", size.width, size.height, err)
+			}
+		}
+	}
+}
+
+type halfImagePart struct {
+	image *Image
+}
+
+func (p *halfImagePart) Len() int {
+	return 1
+}
+
+func (p *halfImagePart) Src(index int) (int, int, int, int) {
+	w, h := p.image.Size()
+	return 0, 0, w, h / 2
+}
+
+func (p *halfImagePart) Dst(index int) (int, int, int, int) {
+	w, h := p.image.Size()
+	return 0, 0, w, h / 2
+}
+
+// Issue 317
+func TestImageEdge(t *testing.T) {
+	const (
+		img0Width  = 16
+		img0Height = 16
+		img1Width  = 32
+		img1Height = 32
+	)
+	img0, err := NewImage(img0Width, img0Height, FilterNearest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pixels := make([]uint8, 4*img0Width*img0Height)
+	for j := 0; j < img0Height; j++ {
+		for i := 0; i < img0Width; i++ {
+			idx := 4 * (i + j*img0Width)
+			switch {
+			case j < img0Height/2:
+				pixels[idx] = 0xff
+				pixels[idx+1] = 0
+				pixels[idx+2] = 0
+				pixels[idx+3] = 0xff
+			default:
+				pixels[idx] = 0
+				pixels[idx+1] = 0xff
+				pixels[idx+2] = 0
+				pixels[idx+3] = 0xff
+			}
+		}
+	}
+	if err := img0.ReplacePixels(pixels); err != nil {
+		t.Fatal(err)
+	}
+	img1, err := NewImage(img1Width, img1Height, FilterNearest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	red := color.RGBA{0xff, 0, 0, 0xff}
+	transparent := color.RGBA{0, 0, 0, 0}
+	// Unfortunately, TravisCI couldn't pass this test for some angles.
+	// https://travis-ci.org/hajimehoshi/ebiten/builds/200454658
+	// Let's use 'decent' angles here.
+	for _, a := range []int{0, 45, 90, 135, 180, 225, 270, 315, 360} {
+		if err := img1.Clear(); err != nil {
+			t.Fatal(err)
+		}
+		op := &DrawImageOptions{}
+		op.ImageParts = &halfImagePart{img0}
+		op.GeoM.Translate(-float64(img0Width)/2, -float64(img0Height)/2)
+		op.GeoM.Rotate(float64(a) * math.Pi / 180)
+		op.GeoM.Translate(img1Width/2, img1Height/2)
+		if err := img1.DrawImage(img0, op); err != nil {
+			t.Fatal(err)
+		}
+		for j := 0; j < img1Height; j++ {
+			for i := 0; i < img1Width; i++ {
+				c := img1.At(i, j)
+				if c == red {
+					continue
+				}
+				if c == transparent {
+					continue
+				}
+				t.Errorf("img1.At(%d, %d) (angle: %d) want: red or transparent, got: %v", i, j, a, c)
 			}
 		}
 	}
